@@ -1,0 +1,74 @@
+name: ada-win-build
+
+# Builds the Windows x64 binaries for Ada (compute capability 8.9) on a GitHub-hosted runner and
+# publishes them as a workflow artifact.  The upstream release.yml pins -DCMAKE_CUDA_ARCHITECTURES=120,
+# which the 4090 D refuses at start (include/basalt/build_archs.hpp), so this workflow is the only
+# difference: the same toolchain action, the same steps, arch 89 instead of 120.
+#
+# Trigger: a push to any branch, or the Actions "Run workflow" button.
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CUDA_VERSION: "13.0.2"
+
+jobs:
+  build-win-ada:
+    runs-on: windows-2022
+    timeout-minutes: 300
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/toolchain
+        with:
+          cuda-version: ${{ env.CUDA_VERSION }}
+          cache-key: windows-2022-ada
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+
+      - name: Install Python dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Configure (sm_89)
+        run: >
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DWERROR=OFF
+          -DBUILD_TESTING=OFF
+          -DCMAKE_CUDA_ARCHITECTURES=89
+          -DCMAKE_C_COMPILER_LAUNCHER=ccache
+          -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          -DCMAKE_CUDA_COMPILER_LAUNCHER=ccache
+          -DPython3_EXECUTABLE="$(python -c 'import sys;print(sys.executable.replace(chr(92),"/"))')"
+
+      - name: Build
+        run: cmake --build build -j "$(nproc)"
+
+      - name: Show the binaries and the arch they carry
+        run: |
+          ls -l bin/
+          for exe in bin/*.exe; do echo "== $exe"; python - "$exe" <<'PY'
+          import sys
+          p = sys.argv[1]
+          d = open(p, "rb").read()
+          print(f"  {len(d)} bytes, sm_89 present: {b'sm_89' in d}, sm_120 present: {b'sm_120' in d}")
+          PY
+          done
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: basalt-ada-win-89
+          path: bin/*.exe
+          if-no-files-found: error
